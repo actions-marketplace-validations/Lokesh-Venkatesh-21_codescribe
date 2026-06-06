@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 from abc import ABC, abstractmethod
@@ -40,17 +41,20 @@ class LocalFallbackProvider(BaseLLMProvider):
 class OllamaProvider(BaseLLMProvider):
     name = "ollama"
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, fallback_on_error: bool = True) -> None:
         self.base_url = settings.ollama_base_url.rstrip("/")
         self.model = settings.ollama_model
         self.timeout = settings.llm_request_timeout_seconds
         self.max_retries = settings.llm_max_retries
+        self.fallback_on_error = fallback_on_error
         self._fallback = LocalFallbackProvider()
 
     async def generate_json(self, prompt: str, fallback_context: dict[str, Any]) -> dict[str, Any]:
         try:
             return await self._generate_json_with_retry(prompt)
         except (httpx.HTTPError, ValueError) as exc:
+            if not self.fallback_on_error:
+                raise
             logger.warning("Ollama generation failed; using deterministic fallback: %s", exc)
             return await self._fallback.generate_json(prompt, fallback_context)
 
@@ -78,6 +82,100 @@ class OllamaProvider(BaseLLMProvider):
         return await _call()
 
 
+class GenericAPIProvider(BaseLLMProvider):
+    name = "generic_api"
+
+    def __init__(self, settings: Settings, fallback_on_error: bool = True) -> None:
+        self.base_url = (settings.generic_llm_api_base_url or "").rstrip("/")
+        self.api_key = settings.generic_llm_api_key
+        self.model = settings.generic_llm_model
+        self.timeout = settings.llm_request_timeout_seconds
+        self.fallback_on_error = fallback_on_error
+        self._fallback = LocalFallbackProvider()
+
+    async def generate_json(self, prompt: str, fallback_context: dict[str, Any]) -> dict[str, Any]:
+        if not self.base_url or not self.api_key:
+            if not self.fallback_on_error:
+                raise ValueError("GENERIC_LLM_API_BASE_URL and GENERIC_LLM_API_KEY are required")
+            logger.warning("Generic LLM API is not configured; using deterministic fallback")
+            return await self._fallback.generate_json(prompt, fallback_context)
+
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(
+                    f"{self.base_url}/chat/completions",
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    json={
+                        "model": self.model,
+                        "messages": [
+                            {
+                                "role": "system",
+                                "content": "Return only valid structured JSON.",
+                            },
+                            {"role": "user", "content": prompt},
+                        ],
+                        "temperature": 0.2,
+                        "response_format": {"type": "json_object"},
+                    },
+                )
+            response.raise_for_status()
+            content = response.json()["choices"][0]["message"]["content"]
+            return normalize_structured_payload(content)
+        except (httpx.HTTPError, KeyError, IndexError, ValueError) as exc:
+            if not self.fallback_on_error:
+                raise ValueError(f"Generic LLM API generation failed: {exc}") from exc
+            logger.warning("Generic LLM API failed; using deterministic fallback: %s", exc)
+            return await self._fallback.generate_json(prompt, fallback_context)
+
+
+class LocalModelProvider(BaseLLMProvider):
+    name = "local_model"
+
+    def __init__(self, settings: Settings, fallback_on_error: bool = True) -> None:
+        self.model = settings.local_model
+        self.timeout = settings.local_model_timeout_seconds
+        self.fallback_on_error = fallback_on_error
+        self._fallback = LocalFallbackProvider()
+        self._pipeline: Any | None = None
+
+    async def generate_json(self, prompt: str, fallback_context: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(self._generate_sync, prompt),
+                timeout=self.timeout,
+            )
+        except Exception as exc:
+            if not self.fallback_on_error:
+                raise RuntimeError(f"Local model generation failed: {exc}") from exc
+            logger.warning("Local model generation failed; using deterministic fallback: %s", exc)
+            return await self._fallback.generate_json(prompt, fallback_context)
+
+    def _generate_sync(self, prompt: str) -> dict[str, Any]:
+        if self._pipeline is None:
+            try:
+                from transformers import pipeline
+            except ImportError as exc:
+                raise RuntimeError(
+                    "Install codescribe[local-llm] to enable LocalModelProvider"
+                ) from exc
+
+            self._pipeline = pipeline(
+                "text-generation",
+                model=self.model,
+                device=-1,
+                max_new_tokens=512,
+            )
+
+        output = self._pipeline(
+            "Return only JSON with keys summary, generated_docs, changed_functions, risks, "
+            f"confidence_score.\n{prompt}"
+        )
+        text = output[0]["generated_text"] if output else ""
+        json_start = text.find("{")
+        json_text = text[json_start:] if json_start >= 0 else text
+        return normalize_structured_payload(json_text)
+
+
 class GeminiProvider(BaseLLMProvider):
     name = "gemini"
 
@@ -103,10 +201,47 @@ class GeminiProvider(BaseLLMProvider):
         return normalize_structured_payload(response.text)
 
 
+class AutoLLMProvider(BaseLLMProvider):
+    name = "auto"
+    model = "auto"
+
+    def __init__(self, settings: Settings) -> None:
+        providers: list[BaseLLMProvider] = [OllamaProvider(settings, fallback_on_error=False)]
+        if settings.generic_llm_api_base_url and settings.generic_llm_api_key:
+            providers.append(GenericAPIProvider(settings, fallback_on_error=False))
+        providers.extend(
+            [
+                LocalModelProvider(settings, fallback_on_error=False),
+                LocalFallbackProvider(),
+            ]
+        )
+        self.providers = providers
+
+    async def generate_json(self, prompt: str, fallback_context: dict[str, Any]) -> dict[str, Any]:
+        failures: list[str] = []
+        for provider in self.providers:
+            try:
+                result = await provider.generate_json(prompt, fallback_context)
+                self.model = provider.model
+                self.name = f"auto:{provider.name}"
+                return result
+            except Exception as exc:
+                failures.append(f"{provider.name}: {exc}")
+                logger.info("Auto LLM provider skipped %s: %s", provider.name, exc)
+        logger.warning("Auto LLM exhausted providers: %s", "; ".join(failures))
+        return await LocalFallbackProvider().generate_json(prompt, fallback_context)
+
+
 def build_llm_provider(settings: Settings) -> BaseLLMProvider:
     provider = settings.llm_provider.lower().strip()
+    if provider == "auto":
+        return AutoLLMProvider(settings)
     if provider == "gemini":
         return GeminiProvider(settings)
+    if provider in {"generic", "generic_api", "openai_compatible"}:
+        return GenericAPIProvider(settings)
+    if provider in {"local_model", "local-llm"}:
+        return LocalModelProvider(settings)
     if provider == "local_fallback":
         return LocalFallbackProvider()
     return OllamaProvider(settings)

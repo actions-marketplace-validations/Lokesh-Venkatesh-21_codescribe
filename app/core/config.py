@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     llm_max_retries: int = 2
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "qwen3:8b"
+    local_model: str = "Qwen/Qwen2.5-0.5B-Instruct"
+    local_model_timeout_seconds: float = 45.0
+    generic_llm_api_base_url: str | None = None
+    generic_llm_api_key: str | None = None
+    generic_llm_model: str = "gpt-4o-mini"
 
     auto_post_reviews: bool = False
     post_pr_comment: bool = False

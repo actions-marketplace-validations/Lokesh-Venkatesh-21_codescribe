@@ -1,6 +1,13 @@
 import pytest
 
-from app.cli import changed_files_from_diff, generate_reports
+from app.cli import (
+    PublishOptions,
+    RiskThresholdExceeded,
+    changed_files_from_diff,
+    filter_changed_files,
+    generate_reports,
+)
+from app.core.agent_config import load_agent_config, merge_agent_config
 from app.core.config import Settings
 
 
@@ -61,3 +68,64 @@ def test_github_actions_mode_config() -> None:
 
     assert settings.codescribe_mode == "github_action"
     assert not settings.post_pr_comment
+
+
+def test_config_file_precedence_and_path_filtering(tmp_path) -> None:
+    config_file = tmp_path / ".codescribe.yml"
+    config_file.write_text(
+        """
+risk_threshold: 50
+include:
+  - "app/**"
+exclude:
+  - "app/generated/**"
+llm_provider: local_fallback
+model: config-model
+""",
+        encoding="utf-8",
+    )
+
+    config = merge_agent_config(
+        load_agent_config(config_file),
+        risk_threshold=80,
+        model="flag-model",
+    )
+    filtered = filter_changed_files(
+        [
+            {"filename": "app/service.py"},
+            {"filename": "app/generated/client.py"},
+            {"filename": "docs/readme.md"},
+        ],
+        config,
+    )
+
+    assert config.risk_threshold == 80
+    assert config.llm_provider == "local_fallback"
+    assert config.model == "flag-model"
+    assert [file_data["filename"] for file_data in filtered] == ["app/service.py"]
+
+
+@pytest.mark.asyncio
+async def test_generate_reports_fail_on_risk_exit_code(tmp_path) -> None:
+    changed_files = [
+        {
+            "filename": "app/auth/service.py",
+            "status": "modified",
+            "patch": "@@\n+API_KEY = \"super-secret-token\"\n",
+            "additions": 200,
+            "deletions": 0,
+        }
+    ]
+
+    with pytest.raises(RiskThresholdExceeded) as exc:
+        await generate_reports(
+            repo="acme/widgets",
+            pr_number=99,
+            changed_files=changed_files,
+            output_dir=tmp_path,
+            settings=Settings(llm_provider="local_fallback"),
+            publish=PublishOptions(fail_on_risk=True),
+            agent_config=merge_agent_config(load_agent_config(None), risk_threshold=10),
+        )
+
+    assert exc.value.risk_score > exc.value.threshold

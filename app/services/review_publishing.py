@@ -19,13 +19,19 @@ class ReviewPublisher:
         self.settings = settings
         self.github_client = github_client or GitHubClient(settings)
 
-    async def publish(self, session: AsyncSession, pull_request_id: str) -> PullRequestReview:
+    async def publish(
+        self,
+        session: AsyncSession,
+        pull_request_id: str,
+        *,
+        auto_approve: bool = False,
+    ) -> PullRequestReview:
         pull_request = await session.get(PullRequest, pull_request_id)
         review = await self._latest_review(session, pull_request_id)
         if not pull_request or not review:
             raise ValueError("Pull request review not found")
 
-        event = self._github_event(review.decision)
+        event = self._github_event(review.decision, auto_approve=auto_approve)
         body = self._summary_body(review)
         comments = [
             {
@@ -43,7 +49,7 @@ class ReviewPublisher:
             event,
             comments,
         )
-        await self.github_client.create_pr_comment(
+        await self.github_client.upsert_sticky_pr_comment(
             pull_request.repo_full_name,
             pull_request.pr_number,
             self._recommendation_body(review),
@@ -72,9 +78,9 @@ class ReviewPublisher:
         return await session.scalar(stmt)
 
     @staticmethod
-    def _github_event(decision: ReviewDecision) -> str:
+    def _github_event(decision: ReviewDecision, *, auto_approve: bool = False) -> str:
         if decision == ReviewDecision.APPROVE:
-            return "APPROVE"
+            return "APPROVE" if auto_approve else "COMMENT"
         if decision == ReviewDecision.REQUEST_CHANGES:
             return "REQUEST_CHANGES"
         return "COMMENT"

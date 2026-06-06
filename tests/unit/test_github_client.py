@@ -53,6 +53,50 @@ class FakeAsyncClient:
         )
 
 
+class StickyCommentClient:
+    calls: list[tuple[str, str]] = []
+
+    def __init__(self, timeout: int) -> None:
+        self.timeout = timeout
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        return None
+
+    async def get(self, url: str, headers: dict | None = None, params: dict | None = None):
+        del headers, params
+        self.calls.append(("get", url))
+        request = httpx.Request("GET", url)
+        return httpx.Response(
+            200,
+            request=request,
+            json=[
+                {
+                    "id": 100,
+                    "url": "https://api.github.test/comment/100",
+                    "body": "<!-- codescribe-agent -->\nOld body",
+                    "user": {"type": "Bot"},
+                }
+            ],
+        )
+
+    async def patch(self, url: str, headers: dict | None = None, json: dict | None = None):
+        del headers
+        self.calls.append(("patch", url))
+        assert json
+        assert "<!-- codescribe-agent -->" in json["body"]
+        assert "New body" in json["body"]
+        request = httpx.Request("PATCH", url)
+        return httpx.Response(200, request=request, json={"id": 100, "body": json["body"]})
+
+    async def post(self, url: str, headers: dict | None = None, json: dict | None = None):
+        del headers, json
+        self.calls.append(("post", url))
+        raise AssertionError("sticky comment should edit the existing marker comment")
+
+
 @pytest.mark.asyncio
 async def test_github_client_paginates_files_and_fetches_diff(monkeypatch) -> None:
     FakeAsyncClient.calls = []
@@ -70,3 +114,20 @@ async def test_github_client_paginates_files_and_fetches_diff(monkeypatch) -> No
     assert diff == "diff --git a/app.py b/app.py"
     assert FakeAsyncClient.calls[0][2] == {"per_page": 100, "page": 1}
     assert FakeAsyncClient.calls[1][2] == {"per_page": 100, "page": 2}
+
+
+@pytest.mark.asyncio
+async def test_github_client_upserts_sticky_comment(monkeypatch) -> None:
+    StickyCommentClient.calls = []
+    monkeypatch.setattr("app.services.github.httpx.AsyncClient", StickyCommentClient)
+
+    client = GitHubClient(
+        Settings(github_token="token", github_api_base_url="https://api.github.test")
+    )
+    result = await client.upsert_sticky_pr_comment("acme/widgets", 22, "New body")
+
+    assert result["mode"] == "updated"
+    assert StickyCommentClient.calls == [
+        ("get", "https://api.github.test/repos/acme/widgets/issues/22/comments"),
+        ("patch", "https://api.github.test/comment/100"),
+    ]

@@ -24,9 +24,10 @@ def test_process_pull_request_creates_artifacts_and_review_workflow(monkeypatch)
         assert repo_full_name == "acme/widgets"
         assert pr_number == 7
         assert "CodeScribe Approval Recommendation" in body
+        return {"id": "mock-comment-id", "mode": "updated"}
 
     monkeypatch.setattr(GitHubClient, "create_pull_request_review", fake_review)
-    monkeypatch.setattr(GitHubClient, "create_pr_comment", fake_comment)
+    monkeypatch.setattr(GitHubClient, "upsert_sticky_pr_comment", fake_comment)
 
     payload = {
         "repo_full_name": "acme/widgets",

@@ -221,7 +221,7 @@ class PRIntelligenceEngine:
                                 severity=severity,
                                 path=path,
                                 line=line_number,
-                                detail=line.strip(),
+                                detail=self._redact_sensitive_value(line.strip()),
                             )
                         )
         return findings
@@ -454,3 +454,11 @@ class PRIntelligenceEngine:
         if score >= 40:
             return "Moderate impact; targeted validation recommended"
         return "Low impact based on changed files and diff metadata"
+
+    @staticmethod
+    def _redact_sensitive_value(value: str) -> str:
+        return re.sub(
+            r"(?i)(secret|password|api[_-]?key|token)(\s*=\s*['\"])[^'\"]+(['\"])",
+            r"\1\2[REDACTED]\3",
+            value,
+        )
