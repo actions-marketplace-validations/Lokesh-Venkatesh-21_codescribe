@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
 from app.db.models import PullRequest
-from app.db.repository import create_pull_request, get_pull_request
+from app.db.repository import get_pull_request, upsert_pull_request_revision
 from app.db.session import get_session
 from app.schemas.pull_requests import (
     ProcessPullRequestRequest,
@@ -29,7 +29,7 @@ async def process_pull_request(
         author=request.author,
         raw_payload={"source": "manual"},
     )
-    pull_request = await create_pull_request(session, pull_request)
+    pull_request = await upsert_pull_request_revision(session, pull_request)
     state = DocumentationState(pull_request=pull_request, changed_files=request.files)
     state = await DocumentationWorkflow(settings).run(session, state)
     return ProcessPullRequestResponse(

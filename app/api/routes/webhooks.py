@@ -2,6 +2,7 @@ import json
 import logging
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request, status
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
@@ -35,8 +36,15 @@ async def github_webhook(
     if x_github_event != "pull_request":
         return WebhookAccepted(pull_request_id="", status="ignored")
 
-    payload = json.loads(payload_bytes)
-    webhook = PullRequestWebhook.model_validate(payload)
+    try:
+        payload = json.loads(payload_bytes)
+        webhook = PullRequestWebhook.model_validate(payload)
+    except (json.JSONDecodeError, ValidationError) as exc:
+        logger.warning("Rejected invalid GitHub webhook payload: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid GitHub webhook payload",
+        ) from exc
     if webhook.action not in {"opened", "synchronize", "reopened", "ready_for_review"}:
         return WebhookAccepted(pull_request_id="", status="ignored")
 

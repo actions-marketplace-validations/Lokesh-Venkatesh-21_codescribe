@@ -1,9 +1,11 @@
 import asyncio
+import os
 
 import httpx
 
 
 async def main() -> None:
+    base_url = os.getenv("CODESCRIBE_BASE_URL", "http://127.0.0.1:8000")
     payload = {
         "repo_full_name": "acme/widgets",
         "pr_number": 42,
@@ -25,7 +27,7 @@ async def main() -> None:
             }
         ],
     }
-    async with httpx.AsyncClient(base_url="http://localhost:8000") as client:
+    async with httpx.AsyncClient(base_url=base_url, timeout=30) as client:
         response = await client.post("/api/v1/pull-requests/process", json=payload)
         response.raise_for_status()
         print(response.json())

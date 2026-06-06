@@ -58,3 +58,18 @@ def test_github_opened_webhook_fetches_files_and_generates_artifacts(monkeypatch
     body = read_response.json()
     assert body["status"] == "ready_for_review"
     assert len(body["artifacts"]) == 11
+
+
+def test_github_webhook_rejects_invalid_json() -> None:
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/webhooks/github",
+            headers={
+                "Content-Type": "application/json",
+                "X-GitHub-Event": "pull_request",
+            },
+            content=b"{invalid-json",
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Invalid GitHub webhook payload"

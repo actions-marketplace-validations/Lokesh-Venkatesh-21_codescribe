@@ -11,11 +11,11 @@ RUN addgroup --system codescribe \
     && python -m pip install --upgrade pip
 
 COPY pyproject.toml README.md ./
-RUN python -m pip install "."
-
 COPY app ./app
 COPY migrations ./migrations
 COPY scripts ./scripts
+
+RUN python -m pip install "."
 
 RUN chmod +x /app/scripts/start-api.sh \
     && chown -R codescribe:codescribe /app

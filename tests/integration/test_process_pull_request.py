@@ -102,3 +102,31 @@ def test_process_pull_request_creates_artifacts_and_review_workflow(monkeypatch)
     dataset_row = json.loads(dataset_path.read_text().strip().splitlines()[-1])
     assert dataset_row["pr_id"] == body["pull_request_id"]
     assert dataset_row["outcome"] == "accepted"
+
+
+def test_process_pull_request_is_idempotent_for_same_revision() -> None:
+    payload = {
+        "repo_full_name": "acme/widgets",
+        "pr_number": 77,
+        "head_sha": "same-revision",
+        "title": "Add retry policy",
+        "author": "octocat",
+        "files": [
+            {
+                "filename": "retry.py",
+                "status": "added",
+                "patch": "@@\n+def retry_once():\n+    return True\n",
+                "additions": 2,
+                "deletions": 0,
+            }
+        ],
+    }
+
+    with TestClient(app) as client:
+        first = client.post("/api/v1/pull-requests/process", json=payload)
+        second = client.post("/api/v1/pull-requests/process", json=payload)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json()["pull_request_id"] == first.json()["pull_request_id"]
+    assert second.json()["status"] == "ready_for_review"
