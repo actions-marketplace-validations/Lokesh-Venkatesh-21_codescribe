@@ -53,6 +53,22 @@ inputs:
     description: Directory where CodeScribe reports are written.
     required: false
     default: codescribe-reports
+  write-artifacts:
+    description: Write Markdown report artifacts into output-dir.
+    required: false
+    default: "false"
+  annotate-code:
+    description: Add AST-validated comment-only annotations above changed functions/classes.
+    required: false
+    default: "true"
+  commit-documentation:
+    description: Commit comment-only annotations and documentation.md back to the PR branch.
+    required: false
+    default: "true"
+  documentation-file:
+    description: Audit documentation file updated on the PR branch.
+    required: false
+    default: documentation.md
 branding:
   icon: git-pull-request
   color: blue
@@ -97,4 +113,11 @@ runs:
           --model "${{ inputs.model }}" \
           --include "${{ inputs.include }}" \
           --exclude "${{ inputs.exclude }}" \
-          --config-file "${{ inputs.config-file }}"
+          --config-file "${{ inputs.config-file }}" \
+          --write-artifacts "${{ inputs.write-artifacts }}" \
+          --annotate-code "${{ inputs.annotate-code }}" \
+          --commit-documentation "${{ inputs.commit-documentation }}" \
+          --documentation-file "${{ inputs.documentation-file }}" \
+          --head-branch "${{ github.event.pull_request.head.ref }}" \
+          --pr-author "${{ github.event.pull_request.user.login }}" \
+          --pr-url "${{ github.event.pull_request.html_url }}"

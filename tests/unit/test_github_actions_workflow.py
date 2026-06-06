@@ -19,9 +19,13 @@ def test_reusable_action_yaml_loads() -> None:
     assert action["runs"]["using"] == "composite"
     assert action["inputs"]["post-review"]["default"] == "false"
     assert action["inputs"]["llm-provider"]["default"] == "auto"
+    assert action["inputs"]["write-artifacts"]["default"] == "false"
+    assert action["inputs"]["annotate-code"]["default"] == "true"
+    assert action["inputs"]["commit-documentation"]["default"] == "true"
     run_step = action["runs"]["steps"][-1]
     assert run_step["env"]["GITHUB_TOKEN"] == "${{ github.token }}"
     assert "--fail-on-risk" in run_step["run"]
+    assert "--commit-documentation" in run_step["run"]
 
 
 def test_container_action_yaml_loads() -> None:

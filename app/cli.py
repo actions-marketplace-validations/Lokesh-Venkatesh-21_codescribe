@@ -11,6 +11,11 @@ from app.core.agent_config import AgentConfig, load_agent_config, merge_agent_co
 from app.core.config import Settings
 from app.db.models import ReviewDecision
 from app.services.ast_analysis import ASTAnalyzer
+from app.services.branch_documentation import (
+    apply_comment_only_annotations,
+    commit_branch_documentation,
+    upsert_documentation_audit,
+)
 from app.services.generators import DocumentationGenerator
 from app.services.github import GitHubClient
 from app.services.pr_intelligence import PRIntelligenceEngine
@@ -30,6 +35,13 @@ class PublishOptions:
     post_review: bool = False
     auto_approve: bool = False
     fail_on_risk: bool = False
+    write_artifacts: bool = True
+    annotate_code: bool = False
+    commit_documentation: bool = False
+    documentation_file: str = "documentation.md"
+    head_branch: str | None = None
+    pr_author: str = ""
+    pr_url: str = ""
 
 
 def main() -> None:
@@ -54,6 +66,13 @@ def main() -> None:
     analyze.add_argument("--include")
     analyze.add_argument("--exclude")
     analyze.add_argument("--config-file", default=".codescribe.yml")
+    analyze.add_argument("--write-artifacts", default="true")
+    analyze.add_argument("--annotate-code", default="false")
+    analyze.add_argument("--commit-documentation", default="false")
+    analyze.add_argument("--documentation-file", default="documentation.md")
+    analyze.add_argument("--head-branch")
+    analyze.add_argument("--pr-author", default="")
+    analyze.add_argument("--pr-url", default="")
 
     args = parser.parse_args()
     if args.command == "analyze-pr":
@@ -75,6 +94,13 @@ def main() -> None:
                     include=args.include,
                     exclude=args.exclude,
                     config_file=args.config_file,
+                    write_artifacts=_parse_bool(args.write_artifacts),
+                    annotate_code=_parse_bool(args.annotate_code),
+                    commit_documentation=_parse_bool(args.commit_documentation),
+                    documentation_file=args.documentation_file,
+                    head_branch=args.head_branch,
+                    pr_author=args.pr_author,
+                    pr_url=args.pr_url,
                 )
             )
         except RiskThresholdExceeded as exc:
@@ -98,6 +124,13 @@ async def analyze_pr_command(
     include: str | list[str] | None = None,
     exclude: str | list[str] | None = None,
     config_file: str | Path | None = ".codescribe.yml",
+    write_artifacts: bool = True,
+    annotate_code: bool = False,
+    commit_documentation: bool = False,
+    documentation_file: str = "documentation.md",
+    head_branch: str | None = None,
+    pr_author: str = "",
+    pr_url: str = "",
 ) -> list[Path]:
     agent_config = merge_agent_config(
         load_agent_config(config_file),
@@ -109,6 +142,12 @@ async def analyze_pr_command(
     )
     diff = _git_diff(base_ref, head_ref)
     changed_files = filter_changed_files(changed_files_from_diff(diff), agent_config)
+    if commit_documentation:
+        changed_files = [
+            file_data
+            for file_data in changed_files
+            if file_data["filename"] != documentation_file
+        ]
     return await generate_reports(
         repo=repo,
         pr_number=pr_number,
@@ -119,6 +158,13 @@ async def analyze_pr_command(
             post_review=post_review,
             auto_approve=auto_approve,
             fail_on_risk=fail_on_risk,
+            write_artifacts=write_artifacts,
+            annotate_code=annotate_code,
+            commit_documentation=commit_documentation,
+            documentation_file=documentation_file,
+            head_branch=head_branch,
+            pr_author=pr_author,
+            pr_url=pr_url,
         ),
         agent_config=agent_config,
     )
@@ -139,28 +185,42 @@ async def generate_reports(
     settings = _settings_for_agent(settings or Settings(), agent_config)
     output_dir.mkdir(parents=True, exist_ok=True)
     analyzer = ASTAnalyzer()
-    generator = DocumentationGenerator(settings)
     changed_files = filter_changed_files(changed_files, agent_config)
+    if publish.commit_documentation:
+        changed_files = [
+            file_data
+            for file_data in changed_files
+            if file_data["filename"] != publish.documentation_file
+        ]
     parsed_files = [
         analyzer.analyze_patch(file_data["filename"], file_data.get("patch"))
         for file_data in changed_files
     ]
 
     documentation_sections = []
-    for parsed_file, file_data in zip(parsed_files, changed_files, strict=False):
-        for symbol in parsed_file.symbols:
-            if symbol.kind == "function":
-                doc = await generator.generate_function_documentation(
-                    parsed_file, symbol, file_data.get("patch")
-                )
-                documentation_sections.append(doc.content)
-            elif symbol.kind == "class":
-                doc = await generator.generate_class_documentation(
-                    parsed_file, symbol, file_data.get("patch")
-                )
-                documentation_sections.append(doc.content)
-        module_doc = await generator.generate_module_summary(parsed_file, file_data.get("patch"))
-        documentation_sections.append(module_doc.content)
+    if publish.write_artifacts:
+        generator = DocumentationGenerator(settings)
+        for parsed_file, file_data in zip(parsed_files, changed_files, strict=False):
+            for symbol in parsed_file.symbols:
+                if symbol.kind == "function":
+                    doc = await generator.generate_function_documentation(
+                        parsed_file,
+                        symbol,
+                        file_data.get("patch"),
+                    )
+                    documentation_sections.append(doc.content)
+                elif symbol.kind == "class":
+                    doc = await generator.generate_class_documentation(
+                        parsed_file,
+                        symbol,
+                        file_data.get("patch"),
+                    )
+                    documentation_sections.append(doc.content)
+            module_doc = await generator.generate_module_summary(
+                parsed_file,
+                file_data.get("patch"),
+            )
+            documentation_sections.append(module_doc.content)
 
     intelligence, reports = PRIntelligenceEngine().analyze(
         repo,
@@ -171,18 +231,46 @@ async def generate_reports(
     review, review_report = ReviewAgent().review(changed_files, parsed_files, intelligence)
 
     written: list[Path] = []
-    if "documentation_report.md" in agent_config.enabled_reports:
+    if publish.write_artifacts and "documentation_report.md" in agent_config.enabled_reports:
         written.append(
             _write_report(
                 output_dir / "documentation_report.md",
                 "# Documentation Report\n\n" + "\n\n---\n\n".join(documentation_sections),
             )
         )
-    for report in reports:
-        if report.title in agent_config.enabled_reports:
-            written.append(_write_report(output_dir / report.title, report.content))
-    if review_report.title in agent_config.enabled_reports:
-        written.append(_write_report(output_dir / review_report.title, review_report.content))
+        for report in reports:
+            if report.title in agent_config.enabled_reports:
+                written.append(_write_report(output_dir / report.title, report.content))
+        if review_report.title in agent_config.enabled_reports:
+            written.append(_write_report(output_dir / review_report.title, review_report.content))
+
+    branch_paths: list[str] = []
+    annotated_files: list[str] = []
+    skipped_annotations: dict[str, str] = {}
+    if publish.annotate_code:
+        annotated_files, skipped_annotations = apply_comment_only_annotations(
+            changed_files,
+            parsed_files,
+        )
+        branch_paths.extend(annotated_files)
+
+    if publish.commit_documentation:
+        documentation_path = upsert_documentation_audit(
+            repo=repo,
+            pr_number=pr_number,
+            pr_author=publish.pr_author,
+            pr_url=publish.pr_url,
+            changed_files=changed_files,
+            parsed_files=parsed_files,
+            risk_score=intelligence.risk.score,
+            decision=review.decision,
+            documentation_file=Path(publish.documentation_file),
+        )
+        branch_paths.append(documentation_path)
+        commit_branch_documentation(
+            branch_paths,
+            branch=publish.head_branch,
+        )
 
     github = GitHubClient(settings)
     if publish.post_comment:
@@ -192,6 +280,10 @@ async def generate_reports(
             intelligence.risk.score,
             review.decision,
             written,
+            changed_files,
+            parsed_files,
+            annotated_files,
+            skipped_annotations,
         )
         await github.upsert_sticky_pr_comment(repo, pr_number, body)
 
@@ -338,8 +430,28 @@ def _sticky_comment_body(
     risk_score: int,
     decision: ReviewDecision,
     written: list[Path],
+    changed_files: list[dict[str, Any]],
+    parsed_files: list[Any],
+    annotated_files: list[str],
+    skipped_annotations: dict[str, str],
 ) -> str:
-    reports = "\n".join(f"- `{path.name}`" for path in written) or "- No reports generated"
+    files = "\n".join(
+        f"- `{item['filename']}` (+{item.get('additions', 0)}/-{item.get('deletions', 0)})"
+        for item in changed_files
+    ) or "- None detected"
+    functions = "\n".join(
+        f"- `{parsed.path}:{symbol.name}`"
+        for parsed in parsed_files
+        for symbol in parsed.symbols
+        if symbol.kind == "function"
+    ) or "- None detected"
+    code_comments = "\n".join(f"- `{path}`" for path in annotated_files) or "- None added"
+    skipped = "\n".join(
+        f"- `{path}`: {reason}" for path, reason in skipped_annotations.items()
+    )
+    reports = "\n".join(f"- `{path.name}`" for path in written)
+    skipped_section = f"### Annotation skips\n{skipped}\n\n" if skipped else ""
+    reports_section = f"### Generated reports\n{reports}\n" if reports else ""
     return (
         "<!-- codescribe-agent -->\n"
         "## CodeScribe PR Review\n\n"
@@ -347,7 +459,11 @@ def _sticky_comment_body(
         f"PR: `#{pr_number}`\n\n"
         f"Decision: `{decision}`\n\n"
         f"Risk score: `{risk_score}/100`\n\n"
-        f"Generated reports:\n{reports}\n"
+        f"### Files changed\n{files}\n\n"
+        f"### Functions changed\n{functions}\n\n"
+        f"### Code comments added\n{code_comments}\n\n"
+        f"{skipped_section}"
+        f"{reports_section}"
     )
 
 

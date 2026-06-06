@@ -18,9 +18,16 @@ INCLUDE="$(value INPUT_INCLUDE '')"
 EXCLUDE="$(value INPUT_EXCLUDE '')"
 CONFIG_FILE="$(value INPUT_CONFIG-FILE .codescribe.yml)"
 OUTPUT_DIR="$(value INPUT_OUTPUT-DIR codescribe-reports)"
+WRITE_ARTIFACTS="$(value INPUT_WRITE-ARTIFACTS false)"
+ANNOTATE_CODE="$(value INPUT_ANNOTATE-CODE true)"
+COMMIT_DOCUMENTATION="$(value INPUT_COMMIT-DOCUMENTATION true)"
+DOCUMENTATION_FILE="$(value INPUT_DOCUMENTATION-FILE documentation.md)"
 PR_NUMBER="${PR_NUMBER:-$(python -c 'import json, os; print(json.load(open(os.environ["GITHUB_EVENT_PATH"]))["pull_request"]["number"])')}"
 BASE_REF="${BASE_REF:-$(python -c 'import json, os; print(json.load(open(os.environ["GITHUB_EVENT_PATH"]))["pull_request"]["base"]["sha"])')}"
 HEAD_REF="${HEAD_REF:-$(python -c 'import json, os; print(json.load(open(os.environ["GITHUB_EVENT_PATH"]))["pull_request"]["head"]["sha"])')}"
+HEAD_BRANCH="${HEAD_BRANCH:-$(python -c 'import json, os; print(json.load(open(os.environ["GITHUB_EVENT_PATH"]))["pull_request"]["head"]["ref"])')}"
+PR_AUTHOR="${PR_AUTHOR:-$(python -c 'import json, os; print(json.load(open(os.environ["GITHUB_EVENT_PATH"]))["pull_request"]["user"]["login"])')}"
+PR_URL="${PR_URL:-$(python -c 'import json, os; print(json.load(open(os.environ["GITHUB_EVENT_PATH"]))["pull_request"]["html_url"])')}"
 
 export CODESCRIBE_MODE=github_action
 export POST_PR_COMMENT="${POST_COMMENT}"
@@ -45,4 +52,11 @@ codescribe analyze-pr \
   --model "${MODEL}" \
   --include "${INCLUDE}" \
   --exclude "${EXCLUDE}" \
-  --config-file "${CONFIG_FILE}"
+  --config-file "${CONFIG_FILE}" \
+  --write-artifacts "${WRITE_ARTIFACTS}" \
+  --annotate-code "${ANNOTATE_CODE}" \
+  --commit-documentation "${COMMIT_DOCUMENTATION}" \
+  --documentation-file "${DOCUMENTATION_FILE}" \
+  --head-branch "${HEAD_BRANCH}" \
+  --pr-author "${PR_AUTHOR}" \
+  --pr-url "${PR_URL}"

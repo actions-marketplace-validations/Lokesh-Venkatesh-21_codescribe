@@ -53,6 +53,22 @@ inputs:
     description: Directory where CodeScribe reports are written.
     required: false
     default: codescribe-reports
+  write-artifacts:
+    description: Write Markdown report artifacts into output-dir.
+    required: false
+    default: "false"
+  annotate-code:
+    description: Add AST-validated comment-only annotations above changed functions/classes.
+    required: false
+    default: "true"
+  commit-documentation:
+    description: Commit comment-only annotations and documentation.md back to the PR branch.
+    required: false
+    default: "true"
+  documentation-file:
+    description: Audit documentation file updated on the PR branch.
+    required: false
+    default: documentation.md
 branding:
   icon: git-pull-request
   color: blue
